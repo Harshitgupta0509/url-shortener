@@ -1,17 +1,9 @@
-import { randomInt } from "crypto";
 import express from "express";
+import { toBase62 } from "./base62";
 import { pool } from "./db";
+import { Snowflake } from "./snowflake";
 
-const ALPHABET =
-  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-function generateCode(length = 7): string {
-  let code = "";
-  for (let i = 0; i < length; i++) {
-    code += ALPHABET[randomInt(ALPHABET.length)];
-  }
-  return code;
-}
+const snowflake = new Snowflake(Number(process.env.MACHINE_ID ?? 1));
 
 function isValidUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -34,11 +26,13 @@ app.post("/api/links", async (req, res) => {
     return;
   }
 
-  const code = generateCode();
-  await pool.query("INSERT INTO links (code, long_url) VALUES ($1, $2)", [
-    code,
-    url,
-  ]);
+  const id = snowflake.nextId();
+  const code = toBase62(id);
+
+  await pool.query(
+    "INSERT INTO links (id, code, long_url) VALUES ($1, $2, $3)",
+    [id.toString(), code, url],
+  );
 
   res.status(201).json({ code, shortUrl: `http://localhost:3000/${code}` });
 });
