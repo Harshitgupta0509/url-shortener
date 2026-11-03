@@ -1,22 +1,7 @@
-import { createClient } from "redis";
+import { redis } from "./redis";
 
 const CACHE_TTL_SECONDS = 3600;
 const cacheEnabled = process.env.CACHE_ENABLED !== "false";
-
-const redis = createClient({
-  url: "redis://localhost:6380",
-  disableOfflineQueue: true,
-});
-
-redis.on("error", (error) => {
-  console.error("Redis error:", error.message);
-});
-
-if (cacheEnabled) {
-  redis.connect().catch((error) => {
-    console.error("Redis connection failed:", error.message);
-  });
-}
 
 export async function getCachedUrl(code: string): Promise<string | null> {
   if (!cacheEnabled) return null;

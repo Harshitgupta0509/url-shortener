@@ -1,8 +1,9 @@
 import express from "express";
 import { toBase62 } from "./base62";
+import { addToBloom, mightExist } from "./bloom";
+import { cacheUrl, getCachedUrl } from "./cache";
 import { pool } from "./db";
 import { Snowflake } from "./snowflake";
-import { cacheUrl, getCachedUrl } from "./cache";
 
 const snowflake = new Snowflake(Number(process.env.MACHINE_ID ?? 1));
 
@@ -35,11 +36,19 @@ app.post("/api/links", async (req, res) => {
     [id.toString(), code, url],
   );
 
+  await addToBloom(code);
+
   res.status(201).json({ code, shortUrl: `http://localhost:3000/${code}` });
 });
 
 app.get("/:code", async (req, res) => {
   const { code } = req.params;
+
+  if (!(await mightExist(code))) {
+    res.set("X-Bloom", "BLOCKED").status(404).json({ error: "Link not found" });
+    return;
+  }
+
   const cachedUrl = await getCachedUrl(code);
 
   if (cachedUrl) {
