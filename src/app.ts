@@ -2,6 +2,7 @@ import express from "express";
 import { toBase62 } from "./base62";
 import { pool } from "./db";
 import { Snowflake } from "./snowflake";
+import { cacheUrl, getCachedUrl } from "./cache";
 
 const snowflake = new Snowflake(Number(process.env.MACHINE_ID ?? 1));
 
@@ -38,9 +39,17 @@ app.post("/api/links", async (req, res) => {
 });
 
 app.get("/:code", async (req, res) => {
+  const { code } = req.params;
+  const cachedUrl = await getCachedUrl(code);
+
+  if (cachedUrl) {
+    res.set("X-Cache", "HIT").redirect(302, cachedUrl);
+    return;
+  }
+
   const result = await pool.query(
     "SELECT long_url FROM links WHERE code = $1",
-    [req.params.code],
+    [code],
   );
 
   if (result.rowCount === 0) {
@@ -48,5 +57,8 @@ app.get("/:code", async (req, res) => {
     return;
   }
 
-  res.redirect(302, result.rows[0].long_url);
+  const longUrl: string = result.rows[0].long_url;
+  await cacheUrl(code, longUrl);
+
+  res.set("X-Cache", "MISS").redirect(302, longUrl);
 });
