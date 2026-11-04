@@ -2,10 +2,12 @@ import express from "express";
 import { toBase62 } from "./base62";
 import { addToBloom, mightExist } from "./bloom";
 import { cacheUrl, getCachedUrl } from "./cache";
-import { pool } from "./db";
-import { trackClick } from "./events";
+import { analyticsPool, pool } from "./db";
+import { publishLinkCreated, trackClick } from "./events";
 import { Snowflake } from "./snowflake";
 
+const REGION = process.env.REGION ?? "unknown";
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL ?? "http://localhost:8080";
 const snowflake = new Snowflake(Number(process.env.MACHINE_ID ?? 1));
 
 function isValidUrl(value: unknown): value is string {
@@ -21,6 +23,11 @@ function isValidUrl(value: unknown): value is string {
 export const app = express();
 app.use(express.json());
 
+app.use((_req, res, next) => {
+  res.set("X-Served-By", REGION);
+  next();
+});
+
 app.post("/api/links", async (req, res) => {
   const { url } = req.body ?? {};
 
@@ -31,15 +38,29 @@ app.post("/api/links", async (req, res) => {
 
   const id = snowflake.nextId();
   const code = toBase62(id);
+  const createdAt = new Date().toISOString();
 
   await pool.query(
-    "INSERT INTO links (id, code, long_url) VALUES ($1, $2, $3)",
-    [id.toString(), code, url],
+    `INSERT INTO links (id, code, long_url, created_region, created_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [id.toString(), code, url, REGION, createdAt],
   );
 
   await addToBloom(code);
 
-  res.status(201).json({ code, shortUrl: `http://localhost:3000/${code}` });
+  publishLinkCreated({
+    id: id.toString(),
+    code,
+    longUrl: url,
+    createdRegion: REGION,
+    createdAt,
+  });
+
+  res.status(201).json({
+    code,
+    region: REGION,
+    shortUrl: `${PUBLIC_BASE_URL}/${code}`,
+  });
 });
 
 app.get("/api/links/:code/stats", async (req, res) => {
@@ -52,17 +73,24 @@ app.get("/api/links/:code/stats", async (req, res) => {
     return;
   }
 
-  const [total, byCountry, byDevice] = await Promise.all([
-    pool.query("SELECT COUNT(*)::int AS clicks FROM clicks WHERE code = $1", [
-      code,
-    ]),
-    pool.query(
+  const [total, byRegion, byCountry, byDevice] = await Promise.all([
+    analyticsPool.query(
+      "SELECT COUNT(*)::int AS clicks FROM clicks WHERE code = $1",
+      [code],
+    ),
+    analyticsPool.query(
+      `SELECT region, COUNT(*)::int AS clicks
+       FROM clicks WHERE code = $1
+       GROUP BY region ORDER BY clicks DESC`,
+      [code],
+    ),
+    analyticsPool.query(
       `SELECT country, COUNT(*)::int AS clicks
        FROM clicks WHERE code = $1
        GROUP BY country ORDER BY clicks DESC`,
       [code],
     ),
-    pool.query(
+    analyticsPool.query(
       `SELECT device, COUNT(*)::int AS clicks
        FROM clicks WHERE code = $1
        GROUP BY device ORDER BY clicks DESC`,
@@ -73,6 +101,7 @@ app.get("/api/links/:code/stats", async (req, res) => {
   res.json({
     code,
     totalClicks: total.rows[0].clicks,
+    byRegion: byRegion.rows,
     byCountry: byCountry.rows,
     byDevice: byDevice.rows,
   });

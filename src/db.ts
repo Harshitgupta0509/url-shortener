@@ -1,5 +1,9 @@
 import { Pool } from "pg";
 
 export const pool = new Pool({
-  connectionString: "postgres://app:app@localhost:5433/shortener",
+  connectionString: process.env.DATABASE_URL,
+});
+
+export const analyticsPool = new Pool({
+  connectionString: process.env.ANALYTICS_DATABASE_URL,
 });

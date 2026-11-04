@@ -1,7 +1,7 @@
 import { createClient } from "redis";
 
 export const redis = createClient({
-  url: "redis://localhost:6380",
+  url: process.env.REDIS_URL,
   disableOfflineQueue: true,
 });
 

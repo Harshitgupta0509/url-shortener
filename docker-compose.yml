@@ -1,20 +1,47 @@
+x-postgres: &postgres
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_USER: app
+    POSTGRES_PASSWORD: app
+    POSTGRES_DB: shortener
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U app -d shortener"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+x-redis: &redis
+  image: redis:8
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-      POSTGRES_DB: shortener
-    ports:
-      - "5433:5432"
+  postgres-india:
+    <<: *postgres
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata-india:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
 
-  redis:
-    image: redis:8
-    ports:
-      - "6380:6379"
+  postgres-us:
+    <<: *postgres
+    volumes:
+      - pgdata-us:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  postgres-analytics:
+    <<: *postgres
+    volumes:
+      - pgdata-analytics:/var/lib/postgresql/data
+      - ./db/analytics.sql:/docker-entrypoint-initdb.d/analytics.sql
+
+  redis-india:
+    <<: *redis
+
+  redis-us:
+    <<: *redis
 
   redpanda:
     image: redpandadata/redpanda:v24.2.7
@@ -24,10 +51,73 @@ services:
       - --mode=dev-container
       - --smp=1
       - --memory=512M
-      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9092
+
+  app-india:
+    build: .
+    environment:
+      REGION: india
+      MACHINE_ID: "1"
+      DATABASE_URL: postgres://app:app@postgres-india:5432/shortener
+      ANALYTICS_DATABASE_URL: postgres://app:app@postgres-analytics:5432/shortener
+      REDIS_URL: redis://redis-india:6379
+      KAFKA_BROKERS: redpanda:9092
+      PUBLIC_BASE_URL: http://localhost:8080
+    depends_on:
+      postgres-india:
+        condition: service_healthy
+      postgres-analytics:
+        condition: service_healthy
+      redis-india:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  app-us:
+    build: .
+    environment:
+      REGION: us
+      MACHINE_ID: "2"
+      DATABASE_URL: postgres://app:app@postgres-us:5432/shortener
+      ANALYTICS_DATABASE_URL: postgres://app:app@postgres-analytics:5432/shortener
+      REDIS_URL: redis://redis-us:6379
+      KAFKA_BROKERS: redpanda:9092
+      PUBLIC_BASE_URL: http://localhost:8080
+    depends_on:
+      postgres-us:
+        condition: service_healthy
+      postgres-analytics:
+        condition: service_healthy
+      redis-us:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  analytics-worker:
+    build: .
+    command: ["npx", "tsx", "src/worker.ts"]
+    restart: on-failure
+    environment:
+      ANALYTICS_DATABASE_URL: postgres://app:app@postgres-analytics:5432/shortener
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  nginx:
+    image: nginx:1.27-alpine
     ports:
-      - "19092:19092"
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app-india
+      - app-us
 
 volumes:
-  pgdata:
+  pgdata-india:
+  pgdata-us:
+  pgdata-analytics:

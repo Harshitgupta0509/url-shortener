@@ -1,11 +1,11 @@
-import { pool } from "./db";
+import { analyticsPool } from "./db";
 import type { ClickEvent } from "./events";
-import { CLICKS_TOPIC, kafka } from "./kafka";
+import { CLICKS_TOPIC, ensureTopics, kafka } from "./kafka";
 
 async function saveClicks(events: ClickEvent[]): Promise<void> {
   if (events.length === 0) return;
 
-  await pool.query(
+  await analyticsPool.query(
     `INSERT INTO clicks (event_id, code, region, country, device, clicked_at)
      SELECT * FROM UNNEST(
        $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]
@@ -23,12 +23,7 @@ async function saveClicks(events: ClickEvent[]): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  const admin = kafka.admin();
-  await admin.connect();
-  await admin.createTopics({
-    topics: [{ topic: CLICKS_TOPIC, numPartitions: 3 }],
-  });
-  await admin.disconnect();
+  await ensureTopics();
 
   const consumer = kafka.consumer({ groupId: "analytics-worker" });
   await consumer.connect();
