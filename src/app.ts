@@ -3,6 +3,7 @@ import { toBase62 } from "./base62";
 import { addToBloom, mightExist } from "./bloom";
 import { cacheUrl, getCachedUrl } from "./cache";
 import { pool } from "./db";
+import { trackClick } from "./events";
 import { Snowflake } from "./snowflake";
 
 const snowflake = new Snowflake(Number(process.env.MACHINE_ID ?? 1));
@@ -41,6 +42,42 @@ app.post("/api/links", async (req, res) => {
   res.status(201).json({ code, shortUrl: `http://localhost:3000/${code}` });
 });
 
+app.get("/api/links/:code/stats", async (req, res) => {
+  const { code } = req.params;
+
+  const link = await pool.query("SELECT 1 FROM links WHERE code = $1", [code]);
+
+  if (link.rowCount === 0) {
+    res.status(404).json({ error: "Link not found" });
+    return;
+  }
+
+  const [total, byCountry, byDevice] = await Promise.all([
+    pool.query("SELECT COUNT(*)::int AS clicks FROM clicks WHERE code = $1", [
+      code,
+    ]),
+    pool.query(
+      `SELECT country, COUNT(*)::int AS clicks
+       FROM clicks WHERE code = $1
+       GROUP BY country ORDER BY clicks DESC`,
+      [code],
+    ),
+    pool.query(
+      `SELECT device, COUNT(*)::int AS clicks
+       FROM clicks WHERE code = $1
+       GROUP BY device ORDER BY clicks DESC`,
+      [code],
+    ),
+  ]);
+
+  res.json({
+    code,
+    totalClicks: total.rows[0].clicks,
+    byCountry: byCountry.rows,
+    byDevice: byDevice.rows,
+  });
+});
+
 app.get("/:code", async (req, res) => {
   const { code } = req.params;
 
@@ -52,6 +89,7 @@ app.get("/:code", async (req, res) => {
   const cachedUrl = await getCachedUrl(code);
 
   if (cachedUrl) {
+    trackClick(code, req.get("user-agent"), req.get("x-country"));
     res.set("X-Cache", "HIT").redirect(302, cachedUrl);
     return;
   }
@@ -68,6 +106,7 @@ app.get("/:code", async (req, res) => {
 
   const longUrl: string = result.rows[0].long_url;
   await cacheUrl(code, longUrl);
+  trackClick(code, req.get("user-agent"), req.get("x-country"));
 
   res.set("X-Cache", "MISS").redirect(302, longUrl);
 });
